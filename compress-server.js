@@ -23,15 +23,12 @@ function download(url, headers, dest) {
   });
 }
 
-function upload(url, headers, filePath) {
+function uploadFile(url, headers, filePath) {
   return new Promise((resolve, reject) => {
     const data = fs.readFileSync(filePath);
     const parsed = new URL(url);
     const options = {
-      hostname: parsed.hostname,
-      port: 443,
-      path: parsed.pathname,
-      method: 'POST',
+      hostname: parsed.hostname, port: 443, path: parsed.pathname, method: 'POST',
       headers: { ...headers, 'Content-Length': data.length }
     };
     const req = https.request(options, (res) => {
@@ -48,10 +45,32 @@ function upload(url, headers, filePath) {
   });
 }
 
+function uploadBuffer(url, headers, buffer) {
+  return new Promise((resolve, reject) => {
+    const parsed = new URL(url);
+    const options = {
+      hostname: parsed.hostname, port: 443, path: parsed.pathname, method: 'POST',
+      headers: { ...headers, 'Content-Length': buffer.length }
+    };
+    const req = https.request(options, (res) => {
+      let body = '';
+      res.on('data', c => body += c);
+      res.on('end', () => {
+        if (res.statusCode >= 200 && res.statusCode < 300) resolve(body);
+        else reject(new Error('Upload ' + res.statusCode + ' ' + body));
+      });
+    });
+    req.on('error', reject);
+    req.write(buffer);
+    req.end();
+  });
+}
+
 const server = http.createServer((req, res) => {
+  // Health check
   if (req.method === 'GET' && req.url === '/health') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ status: 'ok', ffmpeg: true, version: 'v4' }));
+    res.end(JSON.stringify({ status: 'ok', ffmpeg: true, version: 'v5' }));
     return;
   }
 
@@ -61,6 +80,37 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // Route: /upload-base64 — recibe base64 de n8n y sube binario real a Supabase
+  if (req.url === '/upload-base64') {
+    let body = '';
+    req.on('data', c => body += c);
+    req.on('end', async () => {
+      try {
+        const { base64Data, supabaseUrl, supabaseKey, fileName, contentType, bucket } = JSON.parse(body);
+        const bucketName = bucket || 'content-media';
+        const buffer = Buffer.from(base64Data, 'base64');
+        
+        const uploadUrl = supabaseUrl + '/storage/v1/object/' + bucketName + '/' + fileName;
+        await uploadBuffer(uploadUrl, {
+          'apikey': supabaseKey,
+          'Authorization': 'Bearer ' + supabaseKey,
+          'Content-Type': contentType || 'audio/mpeg',
+          'x-upsert': 'true'
+        }, buffer);
+
+        const publicUrl = supabaseUrl + '/storage/v1/object/public/' + bucketName + '/' + fileName;
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, url: publicUrl, sizeMB: (buffer.length / 1048576).toFixed(2) }));
+      } catch (e) {
+        console.error('[upload-base64] ERROR:', e.message);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: e.message }));
+      }
+    });
+    return;
+  }
+
+  // Route: / — compress video (original endpoint)
   let body = '';
   req.on('data', c => body += c);
   req.on('end', async () => {
@@ -91,11 +141,9 @@ const server = http.createServer((req, res) => {
       }
 
       const uploadUrl = supabaseUrl + '/storage/v1/object/' + bucketName + '/' + fileName;
-      await upload(uploadUrl, {
-        'apikey': supabaseKey,
-        'Authorization': 'Bearer ' + supabaseKey,
-        'Content-Type': 'video/mp4',
-        'x-upsert': 'true'
+      await uploadFile(uploadUrl, {
+        'apikey': supabaseKey, 'Authorization': 'Bearer ' + supabaseKey,
+        'Content-Type': 'video/mp4', 'x-upsert': 'true'
       }, finalFile);
 
       try { fs.unlinkSync(input); } catch (e) {}
@@ -104,10 +152,8 @@ const server = http.createServer((req, res) => {
       const publicUrl = supabaseUrl + '/storage/v1/object/public/' + bucketName + '/' + fileName;
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
-        ok: true,
-        avatarUrl: publicUrl,
-        originalMB: (origSize / 1048576).toFixed(2),
-        compressedMB: (compSize / 1048576).toFixed(2)
+        ok: true, avatarUrl: publicUrl,
+        originalMB: (origSize / 1048576).toFixed(2), compressedMB: (compSize / 1048576).toFixed(2)
       }));
     } catch (e) {
       console.error('[compress] ERROR:', e.message);
@@ -118,5 +164,5 @@ const server = http.createServer((req, res) => {
 });
 
 server.listen(3456, '127.0.0.1', () => {
-  console.log('[compress-server] v4 on :3456');
+  console.log('[compress-server] v5 on :3456');
 });
