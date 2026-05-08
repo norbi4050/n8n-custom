@@ -12,8 +12,8 @@ RUN apk add --no-cache \
     font-noto \
     tini
 
-# Instalar n8n globalmente (misma version que usabas)
-RUN npm install -g n8n@2.4.7
+# Instalar n8n globalmente
+RUN npm install -g n8n@2.19.5
 
 # Puppeteer usa el Chromium del sistema
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
